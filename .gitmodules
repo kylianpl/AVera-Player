@@ -1,0 +1,3 @@
+[submodule "libav"]
+	path = libav
+	url = https://git.kytech.fr/Kylian/player-libav-build.git
