@@ -6,7 +6,7 @@ Currently, the player can play any containers supported by LibAV.js (mp4, mkv, w
 A lot of the code is inspired by the audio video player sample from the WebCodecs specification.
 
 ## Features
-- Plays video from a video list
+- Download then play videos from a sample file (no streaming yet)
 - Uses WebCodecs for hardware video/audio decoding (if available)
 - Uses LibAV.js for software decoding fallback
 - Synchronized audio and video playback with the WebAudio timer

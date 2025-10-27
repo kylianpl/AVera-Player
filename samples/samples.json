@@ -1,0 +1,14 @@
+[
+  {
+    "name": "Big Buck Bunny Native render size (4000x2250) 60fps",
+    "path": "https://kytech.fr/sample-video-files/bbb_sunflower_native_60fps_normal.mp4"
+  },
+  {
+    "name": "Jellyfish 4K UHD in mkv container",
+    "path": "https://kytech.fr/sample-video-files/jellyfish-140-mbps-4k-uhd-hevc-10bit.mkv"
+  },
+  {
+    "name": "Jellyfin Test Video 1080p AV1",
+    "path": "https://kytech.fr/sample-video-files/Test%20Jellyfin%201080p%20AV1%2010bit%2030M.mp4"
+  }
+]
