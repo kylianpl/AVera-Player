@@ -196,11 +196,13 @@ document.addEventListener("DOMContentLoaded", async function () {
       isPlaying = e.data.isPlaying;
       updatePlayStopButton();
       if (isPlaying) {
-        initializeAudio(
-          e.data.channelCount,
-          e.data.sampleRate,
-          e.data.sharedArrayBuffer,
-        );
+        if (e.data.channelCount && e.data.sampleRate && e.data.sharedArrayBuffer) {
+          initializeAudio(
+            e.data.channelCount,
+            e.data.sampleRate,
+            e.data.sharedArrayBuffer,
+          );
+        }
         await startAudio();
         sendMediaTimeUpdates(true);
       } else {
@@ -293,7 +295,7 @@ document.addEventListener("DOMContentLoaded", async function () {
   let mediaTimeUpdateInterval = null;
   let uiTimeUpdateInterval = null;
   function sendMediaTimeUpdates(enabled) {
-    if (enabled) {
+    if (enabled && audioInitialized) {
       // Local testing shows this interval (1 second) is frequent enough that the
       // estimated media time between updates drifts by less than 20 msec. Lower
       // values didn't produce meaningfully lower drift and have the downside of

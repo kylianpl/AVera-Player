@@ -197,15 +197,6 @@ class MediaWorker {
         }
       }
 
-      // Setup audio buffer
-      let sampleCountIn500ms =
-        this.DATA_BUFFER_DURATION * this.sampleRate * this.channelCount;
-      this.sharedArrayBuffer = RingBuffer.getStorageForCapacity(
-        sampleCountIn500ms,
-        Float32Array,
-      );
-      this.ringbuffer = new RingBuffer(this.sharedArrayBuffer, Float32Array);
-
       // Notify main thread that initialization is complete
       const duration =
         (await this.libav.AVFormatContext_duration(this.formatContext)) /
@@ -233,6 +224,15 @@ class MediaWorker {
 
       // Audio
       if (this.audioStreamIndex != -1) {
+        // Setup audio buffer
+        let sampleCountIn500ms =
+          this.DATA_BUFFER_DURATION * this.sampleRate * this.channelCount;
+        this.sharedArrayBuffer = RingBuffer.getStorageForCapacity(
+          sampleCountIn500ms,
+          Float32Array,
+        );
+        this.ringbuffer = new RingBuffer(this.sharedArrayBuffer, Float32Array);
+
         const audioConfig = await LibAVJSWebCodecs.audioStreamToConfig(
           this.libav,
           this.streams[this.audioStreamIndex],
@@ -354,7 +354,7 @@ class MediaWorker {
       this.audioStreamIndex != -1 ? "audio" : "video",
     );
 
-    this.feedAudioDecoder();
+    if (this.audioStreamIndex != -1) this.feedAudioDecoder();
     this.feedVideoDecoder();
     // TODO: better sync:
     // 1. get the timestamp of the first audio frame which comes after the video frame
@@ -400,7 +400,7 @@ class MediaWorker {
       sharedArrayBuffer: this.sharedArrayBuffer,
     });
     self.requestAnimationFrame(this.renderVideoLoop.bind(this));
-    this.feedAudioDecoder();
+    if (this.audioStreamIndex != -1) this.feedAudioDecoder();
   }
 
   stopOutput() {
