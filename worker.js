@@ -25,8 +25,6 @@ class MediaWorker {
     this.packet = null;
 
     this.availableStreams = [];
-    this.videoHeight = 0;
-    this.videoWidth = 0;
     this.channelCount = 0;
     this.audioSampleRate = 0;
     this.videoTimeStart = null;
@@ -90,6 +88,9 @@ class MediaWorker {
       case "seek":
         await this.seek(e.data.seconds, e.data.videoTimeStart);
         break;
+      case "changeStream":
+        await this.changeStream(e.data.streamType, e.data.index);
+        break;
       default:
         console.warn("Unknown message type:", e.data.type);
     }
@@ -137,10 +138,8 @@ class MediaWorker {
           );
           if (this.videoStreamIndex == -1) {
             this.videoStreamIndex = streamInfo.index;
-            this.videoWidth = codecpar.width;
-            this.videoHeight = codecpar.height;
-            this.canvas.width = this.videoWidth;
-            this.canvas.height = this.videoHeight;
+            this.canvas.width = codecpar.width;
+            this.canvas.height = codecpar.height;
           }
           this.availableStreams.video.push({
             index: streamInfo.index,
@@ -157,8 +156,6 @@ class MediaWorker {
           );
           if (this.audioStreamIndex == -1) {
             this.audioStreamIndex = streamInfo.index;
-            this.sampleRate = codecpar.sample_rate;
-            this.channelCount = codecpar.channels;
           }
           this.availableStreams.audio.push({
             index: streamInfo.index,
@@ -225,52 +222,11 @@ class MediaWorker {
       // Audio
       if (this.audioStreamIndex != -1) {
         // Setup audio buffer
-        let sampleCountIn500ms =
-          this.DATA_BUFFER_DURATION * this.sampleRate * this.channelCount;
-        this.sharedArrayBuffer = RingBuffer.getStorageForCapacity(
-          sampleCountIn500ms,
-          Float32Array,
-        );
-        this.ringbuffer = new RingBuffer(this.sharedArrayBuffer, Float32Array);
-
-        const audioConfig = await LibAVJSWebCodecs.audioStreamToConfig(
-          this.libav,
-          this.streams[this.audioStreamIndex],
-        );
-        if (AudioDecoder.isConfigSupported(audioConfig)) {
-          this.audioUseWebCodecs = true;
-          this.WCAudioDecoder = new AudioDecoder({
-            output: this.bufferAudioSamples.bind(this),
-            error: (e) => {
-              if (e.name == "NotSupportedError") {
-                console.warn(
-                  "Falling back to libav audio decoding due to NotSupportedError",
-                );
-                this.setupFallbackAudioDecoder();
-              } else {
-                console.error("AudioDecoder error:", e);
-              }
-            },
-          });
-          this.WCAudioDecoder.configure(audioConfig);
-        } else {
-          this.setupFallbackAudioDecoder();
-        }
+        await this.setupAudioDecoder();
       }
       // Video
       if (this.videoStreamIndex != -1) {
-        const videoConfig = await LibAVJSWebCodecs.videoStreamToConfig(
-          this.libav,
-          this.streams[this.videoStreamIndex],
-        );
-        if (VideoDecoder.isConfigSupported(videoConfig)) {
-          this.videoUseWebCodecs = true;
-          this.WCVideoDecoder = new VideoDecoder({
-            output: this.bufferVideoFrame.bind(this),
-            error: (e) => console.error("VideoDecoder error:", e),
-          });
-          this.WCVideoDecoder.configure(videoConfig);
-        }
+        await this.setupVideoDecoder();
       }
     } catch (error) {
       console.error("Error initializing media:", error);
@@ -290,6 +246,8 @@ class MediaWorker {
     }
     if (this.WCAudioDecoder) {
       await this.WCAudioDecoder.flush();
+    } else if (this.AudioDecoderCodecContext) {
+      await this.libav.ff_free_decoder(this.AudioDecoderCodecContext, this.AudioDecoderPacket, this.AudioDecoderFrame);
     }
     if (this.feedAudioDecoderTimeout) {
       clearTimeout(this.feedAudioDecoderTimeout);
@@ -367,6 +325,101 @@ class MediaWorker {
     self.requestAnimationFrame(this.renderVideoLoop.bind(this));
   }
 
+  async changeStream(streamType, streamIndex) {
+    // here is the implementation for changing audio or video stream
+    console.log(`Changing ${streamType} stream to index ${streamIndex}`);
+    if (streamType === "audio") {
+      this.audioStreamIndex = streamIndex;
+      // Reinitialize audio decoder
+      await this.cleanupAudio();
+      await this.setupAudioDecoder();
+      if (this.isPlaying) {
+        this.feedAudioDecoder();
+      }
+      // Update timing info
+    } else if (streamType === "video") {
+      this.videoStreamIndex = streamIndex;
+      // Reinitialize video decoder
+      await this.cleanupVideo();
+      await this.setupVideoDecoder();
+      if (this.isPlaying) {
+        this.feedVideoDecoder();
+      }
+    } else {
+      console.warn(`Unknown stream type: ${streamType}`);
+    }
+  }
+
+  async cleanupAudio() {
+    if (this.WCAudioDecoder) {
+      if (this.WCAudioDecoder.state == "configured")
+        this.WCAudioDecoder.close();
+      this.WCAudioDecoder = null;
+    }
+    if (this.AudioDecoderCodecContext) {
+      await this.libav.ff_free_decoder(this.AudioDecoderCodecContext, this.AudioDecoderPacket, this.AudioDecoderFrame);
+      this.AudioDecoderCodecContext = null;
+    }
+    if (this.feedAudioDecoderTimeout) {
+      clearTimeout(this.feedAudioDecoderTimeout);
+      this.feedAudioDecoderTimeout = null;
+    }
+
+    this.audioPacketQueue = [];
+
+    if (this.ringbuffer) {
+      this.ringbuffer.pop(new Float32Array(this.ringbuffer.available_read()));
+    }
+  }
+
+  async setupAudioDecoder() {
+    // Try to setup WebCodecs AudioDecoder, fallback to libav if not supported
+    this.audioUseWebCodecs = false;
+    var codecpar = await this.libav.ff_copyout_codecpar(
+      this.streams[this.audioStreamIndex].codecpar,
+    );
+    this.sampleRate = codecpar.sample_rate;
+    this.channelCount = codecpar.channels;
+
+    let sampleCountIn500ms =
+      this.DATA_BUFFER_DURATION * this.sampleRate * this.channelCount;
+    this.sharedArrayBuffer = RingBuffer.getStorageForCapacity(
+      sampleCountIn500ms,
+      Float32Array,
+    );
+    this.ringbuffer = new RingBuffer(this.sharedArrayBuffer, Float32Array);
+
+    const audioConfig = await LibAVJSWebCodecs.audioStreamToConfig(
+      this.libav,
+      this.streams[this.audioStreamIndex],
+    );
+    if ((await AudioDecoder.isConfigSupported(audioConfig)).supported) {
+      this.audioUseWebCodecs = true;
+      this.WCAudioDecoder = new AudioDecoder({
+        output: this.bufferAudioSamples.bind(this),
+        error: (e) => {
+          if (e.name == "NotSupportedError") {
+            console.warn(
+              "Falling back to libav audio decoding due to NotSupportedError, should not happen normally.",
+            );
+            this.setupFallbackAudioDecoder();
+          } else {
+            console.error("AudioDecoder error:", e);
+          }
+        },
+      });
+      this.WCAudioDecoder.configure(audioConfig);
+    } else {
+      this.setupFallbackAudioDecoder();
+    }
+    self.postMessage({
+      type: "audioConfig",
+      channelCount: this.channelCount,
+      sampleRate: this.sampleRate,
+      sharedArrayBuffer: this.sharedArrayBuffer,
+    });
+  }
+
   async setupFallbackAudioDecoder() {
     this.audioUseWebCodecs = false;
     if (this.WCAudioDecoder) {
@@ -383,6 +436,32 @@ class MediaWorker {
       this.streams[this.audioStreamIndex].codec_id,
       this.streams[this.audioStreamIndex].codecpar,
     );
+  }
+
+  async cleanupVideo() {
+    if (this.WCVideoDecoder) {
+      if (this.WCVideoDecoder.state == "configured")
+        this.WCVideoDecoder.close();
+      this.WCVideoDecoder = null;
+    }
+    this.videoPacketQueue = [];
+    this.videoFrameBuffer.forEach((frame) => frame.close());
+    this.videoFrameBuffer = [];
+  }
+
+  async setupVideoDecoder() {
+    const videoConfig = await LibAVJSWebCodecs.videoStreamToConfig(
+      this.libav,
+      this.streams[this.videoStreamIndex],
+    );
+    if ((await VideoDecoder.isConfigSupported(videoConfig)).supported) {
+      this.videoUseWebCodecs = true;
+      this.WCVideoDecoder = new VideoDecoder({
+        output: this.bufferVideoFrame.bind(this),
+        error: (e) => console.error("VideoDecoder error:", e),
+      });
+      this.WCVideoDecoder.configure(videoConfig);
+    }
   }
 
   // Communication with main thread

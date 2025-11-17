@@ -2,7 +2,6 @@ var gainNode;
 var readerNode;
 var audioContext;
 var audioWorkletScript;
-var audioInitialized = false;
 var totalTime = 0;
 var lastOffsetMediaTime = 0;
 
@@ -38,20 +37,17 @@ function formatTime(seconds) {
 }
 
 async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
-  if (audioInitialized) {
-    return;
+  if (audioContext) {
+    audioContext.close();
   }
-  audioInitialized = true;
-  if (!audioContext) {
-    try {
-      audioContext = new AudioContext({
-        sampleRate: sampleRate,
-        latencyHint: "playback",
-      });
-    } catch (e) {
-      console.error("** Error: Unable to create audio context");
-      return null;
-    }
+  try {
+    audioContext = new AudioContext({
+      sampleRate: sampleRate,
+      latencyHint: "playback",
+    });
+  } catch (e) {
+    console.error("** Error: Unable to create audio context");
+    return null;
   }
 
   try {
@@ -196,19 +192,18 @@ document.addEventListener("DOMContentLoaded", async function () {
       isPlaying = e.data.isPlaying;
       updatePlayStopButton();
       if (isPlaying) {
-        if (e.data.channelCount && e.data.sampleRate && e.data.sharedArrayBuffer) {
-          initializeAudio(
-            e.data.channelCount,
-            e.data.sampleRate,
-            e.data.sharedArrayBuffer,
-          );
-        }
         await startAudio();
         sendMediaTimeUpdates(true);
       } else {
         await stopAudio();
         sendMediaTimeUpdates(false);
       }
+    } else if (e.data.type === "audioConfig") {
+      initializeAudio(
+        e.data.channelCount,
+        e.data.sampleRate,
+        e.data.sharedArrayBuffer,
+      );
     } else if (e.data.type === "initFinished") {
       document.getElementById("playStopButton").disabled = false;
       totalTime = e.data.duration;
@@ -295,7 +290,7 @@ document.addEventListener("DOMContentLoaded", async function () {
   let mediaTimeUpdateInterval = null;
   let uiTimeUpdateInterval = null;
   function sendMediaTimeUpdates(enabled) {
-    if (enabled && audioInitialized) {
+    if (enabled && audioContext) {
       // Local testing shows this interval (1 second) is frequent enough that the
       // estimated media time between updates drifts by less than 20 msec. Lower
       // values didn't produce meaningfully lower drift and have the downside of
