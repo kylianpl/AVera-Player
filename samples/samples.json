@@ -1,17 +1,23 @@
 [
   {
     "name":"Jellyfin Test Video 1080p H264 3Mbps",
-    "credit": "Licensed under Creative Commons Attribution-Sharealike License https://creativecommons.org/licenses/by-sa/4.0/deed.en",
+    "credit": "Made by Gnattu, licensed under Creative Commons Attribution-Sharealike License https://creativecommons.org/licenses/by-sa/4.0/deed.en",
     "path":"https://kytech.fr/sample-video-files/Test%20Jellyfin%201080p%20AVC%203M.mp4"
   },
   {
     "name": "Jellyfin Test Video 1080p AV1 30Mbps",
-    "credit": "Licensed under Creative Commons Attribution-Sharealike License https://creativecommons.org/licenses/by-sa/4.0/deed.en",
+    "credit": "Made by Gnattu, licensed under Creative Commons Attribution-Sharealike License https://creativecommons.org/licenses/by-sa/4.0/deed.en",
     "path": "https://kytech.fr/sample-video-files/Test%20Jellyfin%201080p%20AV1%2010bit%2030M.mp4"
   },
   {
+    "name": "Big Buck Bunny 720p 24fps surround",
+    "credit": "Made by Blender Foundation, licensed under Creative Commons: By Attribution 4.0 License http://creativecommons.org/licenses/by/4.0/",
+    "path": "https://kytech.fr/sample-video-files/big_buck_bunny_720p_surround.avi",
+    "selected": true
+  },
+  {
     "name": "Big Buck Bunny Native render size (4000x2250) 60fps",
-    "credit": "Licensed under Creative Commons: By Attribution 4.0 License http://creativecommons.org/licenses/by/4.0/ ",
+    "credit": "Made by Blender Foundation and B. Kristensen, licensed under Creative Commons: By Attribution 4.0 License http://creativecommons.org/licenses/by/4.0/",
     "path": "https://kytech.fr/sample-video-files/bbb_sunflower_native_60fps_normal.mp4"
   },
   {
