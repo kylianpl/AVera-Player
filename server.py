@@ -12,6 +12,11 @@ class SharedArrayBufferHandler(SimpleHTTPRequestHandler):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        if "lib" not in self.path:
+            self.send_header("Cache-Control", "no-cache")
+        else:
+            self.send_header("Cache-Control", "revalidate")
+
         super().end_headers()
 
 
