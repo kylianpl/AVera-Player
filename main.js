@@ -137,7 +137,20 @@ document.addEventListener("DOMContentLoaded", async function () {
     // TODO correctly stop and re-init the worker
     // For now just save to local storage and reload the page
     localStorage.setItem("video", event.target.value);
-    location.reload();
+    document.getElementById("playStopButton").disabled = true;
+    document.getElementById("buffering").style.display = "none";
+
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+
+    var totalTime = 0;
+    var lastOffsetMediaTime = 0;
+    worker.postMessage({
+      type: "reinit",
+      video: event.target.value || null,
+    });
   });
 
   // Toggle video on button click
@@ -205,6 +218,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         e.data.sharedArrayBuffer,
       );
     } else if (e.data.type === "initFinished") {
+      document.getElementById("buffering").style.display = "none";
       document.getElementById("playStopButton").disabled = false;
       totalTime = e.data.duration;
       document.getElementById("duration").textContent = formatTime(

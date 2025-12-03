@@ -13,6 +13,7 @@ class MediaWorker {
     this.renderer = null;
     this.isPlaying = false;
     this.isSeeking = false;
+    this.fileEnded = false;
 
     this.sharedArrayBuffer = null;
     this.ringbuffer = null;
@@ -74,6 +75,9 @@ class MediaWorker {
       case "init":
         await this.init(e.data);
         break;
+      case "reinit":
+        await this.reInit(e.data);
+        break;
       case "start":
         this.startOutput();
         this.updateMediaTime(e.data.pausedVideoTime, e.data.videoTimeStart);
@@ -100,7 +104,42 @@ class MediaWorker {
   async init(data) {
     this.canvas = data.canvas;
     this.renderer = new WebGLRenderer(this.canvas);
+    await this.playerInit(data.video);
+  }
 
+  async reInit(data) {
+    await this.cleanupAudio();
+    await this.cleanupVideo();
+    await this.libav.unlink("sample");
+    this.isPlaying = false;
+    this.isSeeking = false;
+    this.audioStreamIndex = -1;
+    this.videoStreamIndex = -1;
+
+    this.availableStreams = [];
+    this.channelCount = 0;
+    this.audioSampleRate = 0;
+    this.videoTimeStart = null;
+    this.pausedVideoTime = null;
+
+    this.videoFillInProgress = false;
+    this.audioFillInProgress = false;
+    this.queueFillInProgress = false;
+
+    this.formatContext = null;
+    this.fileEnded = false;
+
+    await this.playerInit(data.video);
+  }
+
+  async playerInit(videoURL) {
+    // debug print every method
+    const methods = Object.getOwnPropertyNames(this)
+      .map(key => ({
+        name: key,
+        value: this[key]
+      }));
+    console.log(methods);
     try {
       await this.initLibAV();
       // Load video file
@@ -108,7 +147,7 @@ class MediaWorker {
       let loaded = false;
       while (!loaded) {
         try {
-          var videoResponse = await fetch(data.video);
+          var videoResponse = await fetch(videoURL);
           if (!videoResponse.ok) {
             throw new Error(
               `Failed to fetch video: ${videoResponse.statusText}`,
@@ -128,9 +167,14 @@ class MediaWorker {
         loaded = true;
       }
       // alternative: let libav fetch the file directly (buggy for now)
-      //[this.formatContext, this.streams] = await this.libav.ff_init_demuxer_file("jsfetch:" + new URL(data.video, location.href).href);
+      //[this.formatContext, this.streams] = await this.libav.ff_init_demuxer_file("jsfetch:" + new URL(videoURL, location.href).href);
 
-      this.availableStreams = { video: [], audio: [], subtitle: [], other: [] };
+      this.availableStreams = {
+        video: [],
+        audio: [],
+        subtitle: [],
+        other: [],
+      };
       for (const streamInfo of this.streams) {
         if (streamInfo.codec_type == LibAV.AVMEDIA_TYPE_VIDEO) {
           var codecpar = await this.libav.ff_copyout_codecpar(
@@ -247,7 +291,11 @@ class MediaWorker {
     if (this.WCAudioDecoder) {
       await this.WCAudioDecoder.flush();
     } else if (this.AudioDecoderCodecContext) {
-      await this.libav.ff_free_decoder(this.AudioDecoderCodecContext, this.AudioDecoderPacket, this.AudioDecoderFrame);
+      await this.libav.ff_free_decoder(
+        this.AudioDecoderCodecContext,
+        this.AudioDecoderPacket,
+        this.AudioDecoderFrame,
+      );
     }
     if (this.feedAudioDecoderTimeout) {
       clearTimeout(this.feedAudioDecoderTimeout);
@@ -357,8 +405,14 @@ class MediaWorker {
       this.WCAudioDecoder = null;
     }
     if (this.AudioDecoderCodecContext) {
-      await this.libav.ff_free_decoder(this.AudioDecoderCodecContext, this.AudioDecoderPacket, this.AudioDecoderFrame);
+      await this.libav.ff_free_decoder(
+        this.AudioDecoderCodecContext,
+        this.AudioDecoderPacket,
+        this.AudioDecoderFrame,
+      );
       this.AudioDecoderCodecContext = null;
+      this.AudioDecoderPacket = null;
+      this.AudioDecoderFrame = null;
     }
     if (this.feedAudioDecoderTimeout) {
       clearTimeout(this.feedAudioDecoderTimeout);
@@ -378,11 +432,11 @@ class MediaWorker {
     var codecpar = await this.libav.ff_copyout_codecpar(
       this.streams[this.audioStreamIndex].codecpar,
     );
-    this.sampleRate = codecpar.sample_rate;
+    this.audioSampleRate = codecpar.sample_rate;
     this.channelCount = codecpar.channels;
 
     let sampleCountIn500ms =
-      this.DATA_BUFFER_DURATION * this.sampleRate * this.channelCount;
+      this.DATA_BUFFER_DURATION * this.audioSampleRate * this.channelCount;
     this.sharedArrayBuffer = RingBuffer.getStorageForCapacity(
       sampleCountIn500ms,
       Float32Array,
@@ -410,12 +464,12 @@ class MediaWorker {
       });
       this.WCAudioDecoder.configure(audioConfig);
     } else {
-      this.setupFallbackAudioDecoder();
+      await this.setupFallbackAudioDecoder();
     }
     self.postMessage({
       type: "audioConfig",
       channelCount: this.channelCount,
-      sampleRate: this.sampleRate,
+      sampleRate: this.audioSampleRate,
       sharedArrayBuffer: this.sharedArrayBuffer,
     });
   }
@@ -471,13 +525,7 @@ class MediaWorker {
 
     this.isPlaying = true;
     this.videoTimeStart = performance.now();
-    self.postMessage({
-      type: "videoStatus",
-      isPlaying: this.isPlaying,
-      channelCount: this.channelCount,
-      sampleRate: this.sampleRate,
-      sharedArrayBuffer: this.sharedArrayBuffer,
-    });
+    self.postMessage({ type: "videoStatus", isPlaying: this.isPlaying });
     self.requestAnimationFrame(this.renderVideoLoop.bind(this));
     if (this.audioStreamIndex != -1) this.feedAudioDecoder();
   }
@@ -694,7 +742,7 @@ class MediaWorker {
     let usedBufferElements =
       this.ringbuffer.capacity() - this.ringbuffer.available_write();
     let usedBufferSecs =
-      usedBufferElements / (this.channelCount * this.sampleRate);
+      usedBufferElements / (this.channelCount * this.audioSampleRate);
     if (usedBufferSecs >= this.DATA_BUFFER_DECODE_TARGET_DURATION) {
       // Buffer is sufficiently full, wait before decoding more
       if (this.isPlaying) {
@@ -747,7 +795,7 @@ class MediaWorker {
         usedBufferElements =
           this.ringbuffer.capacity() - this.ringbuffer.available_write();
         usedBufferSecs =
-          usedBufferElements / (this.channelCount * this.sampleRate);
+          usedBufferElements / (this.channelCount * this.audioSampleRate);
       }
     } catch (e) {
       console.error("Error decoding audio data:", e);
