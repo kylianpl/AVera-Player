@@ -195,6 +195,7 @@ class MediaWorker {
     await this.playerInit(data.video);
     if (data.autoplay && this.formatContext) {
       this.updateMediaTime(0, performance.now() + performance.timeOrigin);
+      await this.showInitialFrame();
       this.startOutput();
     } else if (this.formatContext) {
       await this.showInitialFrame();

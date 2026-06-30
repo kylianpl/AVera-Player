@@ -37,17 +37,24 @@ function formatTime(seconds) {
 }
 
 async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
-  if (audioContext) {
+  if (audioContext && audioContext.sampleRate !== sampleRate) {
     await audioContext.close();
+    audioContext = null;
   }
-  try {
-    audioContext = new AudioContext({
-      sampleRate: sampleRate,
-      latencyHint: "playback",
-    });
-  } catch (e) {
-    console.error("** Error: Unable to create audio context");
-    return null;
+  if (readerNode) {
+    readerNode.disconnect();
+    readerNode = null;
+  }
+  if (!audioContext) {
+    try {
+      audioContext = new AudioContext({
+        sampleRate: sampleRate,
+        latencyHint: "playback",
+      });
+    } catch (e) {
+      console.error("** Error: Unable to create audio context");
+      return null;
+    }
   }
 
   try {
@@ -80,7 +87,9 @@ async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
       return null;
     }
   }
-  gainNode = audioContext.createGain();
+  if (!gainNode || gainNode.context !== audioContext) {
+    gainNode = audioContext.createGain();
+  }
   gainNode.gain.setValueAtTime(
     document.getElementById("volumeControl").value,
     audioContext.currentTime,
@@ -148,12 +157,17 @@ document.addEventListener("DOMContentLoaded", async function () {
     document.getElementById("duration").textContent = "Loading...";
 
     if (audioContext) {
-      await audioContext.close();
-      audioContext = null;
+      lastOffsetMediaTime = -(audioContext.currentTime ?? 0);
+      await audioContext.suspend();
+      if (readerNode) {
+        readerNode.disconnect();
+        readerNode = null;
+      }
+    } else {
+      lastOffsetMediaTime = 0;
     }
 
     totalTime = 0;
-    lastOffsetMediaTime = 0;
     mediaClockStartSeconds = 0;
     mediaClockStartTime = performance.now() + performance.timeOrigin;
     worker.postMessage({
