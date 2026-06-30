@@ -4,6 +4,10 @@ var audioContext;
 var audioWorkletScript;
 var totalTime = 0;
 var lastOffsetMediaTime = 0;
+var audioStreamActivated = false;
+var audioGenerationBuffer = new SharedArrayBuffer(4);
+var audioGenerationFlag = new Int32Array(audioGenerationBuffer);
+Atomics.store(audioGenerationFlag, 0, 0);
 
 document.getElementById("playStopButton").disabled = true;
 
@@ -41,19 +45,27 @@ async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
     console.warn(
       `initializeAudio: rate mismatch (ctx=${audioContext.sampleRate} vs stream=${sampleRate}), recreating`,
     );
+    console.log(`[audio] close ${audioContext.sampleRate}Hz (→ ${sampleRate}Hz)`);
     await audioContext.close();
     audioContext = null;
+    audioStreamActivated = false;
   }
   if (readerNode) {
+    console.log(`[audio] disconnect old readerNode`);
     readerNode.disconnect();
     readerNode = null;
   }
+  Atomics.add(audioGenerationFlag, 0, 1);
+  console.log(`[audio] generation bumped to ${Atomics.load(audioGenerationFlag, 0)}`);
   if (!audioContext) {
     try {
+      console.log(`[audio] new AudioContext(${sampleRate}Hz) — from initializeAudio`);
       audioContext = new AudioContext({
         sampleRate: sampleRate,
         latencyHint: "playback",
       });
+      console.log(`[audio] suspend (initial state: ${audioContext.state})`);
+      await audioContext.suspend();
     } catch (e) {
       console.error("** Error: Unable to create audio context");
       return null;
@@ -61,10 +73,14 @@ async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
   }
 
   try {
+    var gen = Atomics.load(audioGenerationFlag, 0);
+    console.log(`[audio] new AudioWorkletNode(gen=${gen}, ch=${channelCount})`);
     readerNode = new AudioWorkletNode(audioContext, "audio-reader", {
       processorOptions: {
         sharedArrayBuffer: sharedArrayBuffer,
         mediaChannelCount: channelCount,
+        generationBuffer: audioGenerationBuffer,
+        generation: gen,
       },
       outputChannelCount: [channelCount],
     });
@@ -77,11 +93,14 @@ async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
           "audio-reader.js",
         ]);
       }
+      console.log(`[audio] addModule + new AudioWorkletNode(gen=${gen}, ch=${channelCount})`);
       await audioContext.audioWorklet.addModule(audioWorkletScript);
       readerNode = new AudioWorkletNode(audioContext, "audio-reader", {
         processorOptions: {
           sharedArrayBuffer: sharedArrayBuffer,
           mediaChannelCount: channelCount,
+          generationBuffer: audioGenerationBuffer,
+          generation: gen,
         },
         outputChannelCount: [channelCount],
       });
@@ -91,22 +110,39 @@ async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
     }
   }
   if (!gainNode || gainNode.context !== audioContext) {
+    console.log(`[audio] new gainNode`);
     gainNode = audioContext.createGain();
   }
   gainNode.gain.setValueAtTime(
     document.getElementById("volumeControl").value,
     audioContext.currentTime,
   );
-  readerNode.connect(gainNode).connect(audioContext.destination);
+  readerNode.port.onmessage = (e) => {
+    if (e.data.type === "partialReads") {
+      console.warn(`[audio] Partial reads: ${e.data.count} (read ${e.data.read}/${e.data.expected})`);
+    }
+  };
 }
 
 async function stopAudio() {
+  if (readerNode) {
+    console.log(`[audio] stopAudio → disconnect readerNode`);
+    readerNode.disconnect();
+  }
+  audioStreamActivated = false;
   if (audioContext) {
+    console.log(`[audio] stopAudio → suspend (state: ${audioContext.state})`);
     await audioContext.suspend();
   }
 }
 async function startAudio() {
   if (audioContext) {
+    if (readerNode && gainNode && !audioStreamActivated) {
+      console.log(`[audio] startAudio → connect readerNode → gainNode → destination`);
+      readerNode.connect(gainNode).connect(audioContext.destination);
+      audioStreamActivated = true;
+    }
+    console.log(`[audio] startAudio → resume (state: ${audioContext.state})`);
     await audioContext.resume();
   }
 }
@@ -149,7 +185,6 @@ document.addEventListener("DOMContentLoaded", async function () {
     }
   });
   document.getElementById("video").addEventListener("change", async (event) => {
-    const wasPlaying = isPlaying;
     localStorage.setItem("video", event.target.value);
     isPlaying = false;
     updatePlayStopButton();
@@ -166,6 +201,8 @@ document.addEventListener("DOMContentLoaded", async function () {
       if (readerNode) {
         readerNode.disconnect();
         readerNode = null;
+        Atomics.add(audioGenerationFlag, 0, 1);
+        console.log(`[audio] source change — generation bumped to ${Atomics.load(audioGenerationFlag, 0)}`);
       }
     } else {
       lastOffsetMediaTime = 0;
@@ -177,7 +214,6 @@ document.addEventListener("DOMContentLoaded", async function () {
     worker.postMessage({
       type: "reinit",
       video: event.target.value || null,
-      autoplay: wasPlaying,
     });
   });
 
@@ -247,9 +283,6 @@ document.addEventListener("DOMContentLoaded", async function () {
         e.data.sampleRate,
         e.data.sharedArrayBuffer,
       );
-      if (isPlaying) {
-        await startAudio();
-      }
     } else if (e.data.type === "initFinished") {
       document.getElementById("buffering").style.display = "none";
       document.getElementById("playStopButton").disabled = false;
@@ -304,6 +337,7 @@ document.addEventListener("DOMContentLoaded", async function () {
       }
       mediaClockStartSeconds = e.data.mediaTime;
       mediaClockStartTime = performance.now() + performance.timeOrigin;
+      if (isPlaying) await startAudio();
     } else if (e.data.type === "avDrift") {
       if (audioContext) {
         const driftMs = e.data.driftMs;
@@ -340,6 +374,7 @@ document.addEventListener("DOMContentLoaded", async function () {
       const targetStream = availableStreams?.audio?.find(s => s.index === idx);
       if (targetStream) {
         if (audioContext && audioContext.sampleRate !== targetStream.sampleRate) {
+          console.log(`[audio] close ${audioContext.sampleRate}Hz → pre-create ${targetStream.sampleRate}Hz`);
           audioContext.close();
           audioContext = tryCreateAudioContext(targetStream.sampleRate);
         } else if (!audioContext) {
@@ -356,15 +391,20 @@ document.addEventListener("DOMContentLoaded", async function () {
 
   function tryCreateAudioContext(sampleRate) {
     try {
+      console.log(`[audio] new AudioContext(${sampleRate}Hz) — from changeStream`);
       const ctx = new AudioContext({ sampleRate, latencyHint: "playback" });
-      if (!isPlaying) ctx.suspend();
-      console.log(`AudioContext created at ${ctx.sampleRate} Hz (requested ${sampleRate} Hz)`);
+      if (!isPlaying) {
+        console.log(`[audio] suspend (initial state: ${ctx.state})`);
+        ctx.suspend();
+      }
       return ctx;
     } catch (e) {
-      console.warn(`Failed to create AudioContext at ${sampleRate} Hz: ${e}. Using default.`);
+      console.warn(`[audio] Failed to create AudioContext at ${sampleRate} Hz: ${e}. Using default.`);
       const ctx = new AudioContext({ latencyHint: "playback" });
-      if (!isPlaying) ctx.suspend();
-      console.log(`AudioContext created at fallback ${ctx.sampleRate} Hz`);
+      if (!isPlaying) {
+        console.log(`[audio] suspend fallback (initial state: ${ctx.state})`);
+        ctx.suspend();
+      }
       return ctx;
     }
   }

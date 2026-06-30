@@ -12,6 +12,10 @@ class AudioReaderProcessor extends AudioWorkletProcessor {
     this.sharedArrayBuffer = options.processorOptions.sharedArrayBuffer;
     this.consumerSide = new RingBuffer(this.sharedArrayBuffer, Float32Array);
     this.mediaChannelCount = options.processorOptions.mediaChannelCount;
+    this.generation = options.processorOptions.generation;
+    this.generationFlag = new Int32Array(
+      options.processorOptions.generationBuffer,
+    );
     // https://www.w3.org/TR/webaudio/#render-quantum-size
     const RENDER_QUANTUM_SIZE = 128;
     this.deinterleaveBuffer = new Float32Array(
@@ -30,11 +34,18 @@ class AudioReaderProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs, params) {
+    if (Atomics.load(this.generationFlag, 0) !== this.generation) {
+      return false;
+    }
     const read = this.consumerSide.pop(this.deinterleaveBuffer);
     if (read !== this.deinterleaveBuffer.length) {
+      console.warn(`[audio-worklet] partial read: got ${read}/${this.deinterleaveBuffer.length} elements`);
       const filled = Math.max(0, read);
-      this.deinterleaveBuffer.fill(0, filled);
-      if (filled === 0) {
+      if (filled > 0) {
+        const lastVal = this.deinterleaveBuffer[filled - 1];
+        this.deinterleaveBuffer.fill(lastVal, filled);
+      } else {
+        this.deinterleaveBuffer.fill(0);
         for (const ch of outputs[0]) ch.fill(0);
         return true;
       }

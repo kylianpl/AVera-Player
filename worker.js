@@ -1,6 +1,6 @@
 import { RingBuffer } from "./libs/ringbuf.js";
 import * as LibAVJSWebCodecs from "./libav/libavjs-webcodecs-bridge.mjs";
-import LibAV from "./libav/libav-6.8.8.0-player.mjs";
+import LibAV from "./libav/libav-6.9.8.1-player.mjs";
 import {
   WebGLRenderer,
   WebGPURenderer,
@@ -45,8 +45,8 @@ class MediaWorker {
     this.VideoDecoderPacket = null;
     this.VideoDecoderFrame = null;
 
-    this.DATA_BUFFER_DURATION = 0.6;
-    this.DATA_BUFFER_DECODE_TARGET_DURATION = 0.3;
+    this.DATA_BUFFER_DURATION = 4.0;
+    this.DATA_BUFFER_DECODE_TARGET_DURATION = 2.0;
     this.DECODER_QUEUE_SIZE_MAX = 5;
     this.FRAME_BUFFER_TARGET_SIZE = 5;
     this.PACKET_QUEUE_MIN_SIZE = 60;
@@ -95,6 +95,7 @@ class MediaWorker {
   async initLibAV() {
     if (!this.libav) {
       this.libav = await LibAV.LibAV();
+      console.log(`[worker] libav.js backend: ${LibAV.target()}, mode: ${this.libav.libavjsMode}`);
     }
   }
 
@@ -193,11 +194,7 @@ class MediaWorker {
     this.renderer?.clear?.();
 
     await this.playerInit(data.video);
-    if (data.autoplay && this.formatContext) {
-      this.updateMediaTime(0, performance.now() + performance.timeOrigin);
-      await this.showInitialFrame();
-      this.startOutput();
-    } else if (this.formatContext) {
+    if (this.formatContext) {
       await this.showInitialFrame();
     }
   }
@@ -1267,6 +1264,12 @@ class MediaWorker {
     }
   }
 
+  async pumpPipeline() {
+    if (!this.formatContext || this.isSeeking) return;
+    if (this.audioStreamIndex !== -1) await this.feedAudioDecoder();
+    if (this.videoStreamIndex !== -1) await this.feedVideoDecoder();
+  }
+
   schedulePipelinePump() {
     if (this.pipelinePumpScheduled || this.isSeeking) return;
     this.pipelinePumpScheduled = true;
@@ -1274,12 +1277,6 @@ class MediaWorker {
       this.pipelinePumpScheduled = false;
       await this.pumpPipeline();
     });
-  }
-
-  async pumpPipeline() {
-    if (!this.formatContext || this.isSeeking) return;
-    if (this.audioStreamIndex !== -1) await this.feedAudioDecoder();
-    if (this.videoStreamIndex !== -1) await this.feedVideoDecoder();
   }
 
   // Time management
@@ -1370,9 +1367,11 @@ class MediaWorker {
     }
 
     this.queueFillInProgress = true;
-    // ff_read_frame_multi to fill videoPacketQueue and audioPacketQueue
-    await this.refillFrameQueuesInternal();
-    this.queueFillInProgress = false;
+    try {
+      await this.refillFrameQueuesInternal();
+    } finally {
+      this.queueFillInProgress = false;
+    }
   }
   async refillFrameQueuesInternal() {
     // Video step 1/4: fill videoPacketQueue with demuxed packets
@@ -1599,7 +1598,6 @@ class MediaWorker {
     if (usedBufferSecs >= this.DATA_BUFFER_DECODE_TARGET_DURATION) {
       // Buffer is sufficiently full, wait before decoding more
       if (this.isPlaying) {
-        // Schedule next check when buffer is half empty
         this.feedAudioDecoderTimeout = setTimeout(
           this.feedAudioDecoder.bind(this),
           (1000 * usedBufferSecs) / 2,
@@ -1618,7 +1616,6 @@ class MediaWorker {
         if (this.audioPacketQueue.length === 0) {
           await this.refillFrameQueues();
           if (this.audioPacketQueue.length === 0) {
-            // No more audio packets available
             console.warn("No more audio packets available");
             break;
           }
@@ -1635,8 +1632,6 @@ class MediaWorker {
           if (!this.WCAudioDecoder) return;
           this.WCAudioDecoder.decode(chunk);
         } else {
-          if (!this.AudioDecoderCodecContext) return;
-          // fallback decoding with libav
           if (!this.AudioDecoderCodecContext) return;
           var frames = await this.libav.ff_decode_multi(
             this.AudioDecoderCodecContext,
@@ -1717,10 +1712,12 @@ class MediaWorker {
       const formatName = planar ? "planar" : "interleaved";
       const typeName = el?.constructor?.name ?? "unknown";
       const chLayout = data.ch_layout_nb_channels ?? "?";
+      const fmtNames = {3:"FLT",8:"FLTP",1:"S16",7:"S32P"};
+      const fmtName = fmtNames[data.format] ?? `fmt=${data.format}`;
       console.log(
         `[audio] libav frame: nb_samples=${data.nb_samples}`,
         `sr=${data.sample_rate} ch=${data.channels} ch_layout=${chLayout}`,
-        `${formatName} ${typeName}`,
+        `${formatName} ${typeName} ${fmtName}`,
       );
       this._audioDebugCount = (this._audioDebugCount || 0) + 1;
     }
@@ -1773,9 +1770,9 @@ class MediaWorker {
           // planar data
           planarBuffers[i].set(samples[i].subarray(0, frameNumber));
         } else {
-          // interleaved data
+          // interleaved data (sample-interleaved: ch0_s0, ch1_s0, ..., ch0_s1, ch1_s1, ...)
           for (let j = 0; j < frameNumber; j++) {
-            planarBuffers[i][j] = samples[j + frameNumber * i];
+            planarBuffers[i][j] = samples[j * this.channelCount + i];
           }
         }
       }
