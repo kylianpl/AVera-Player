@@ -314,6 +314,9 @@ class MediaWorker {
       // Video
       if (this.videoStreamIndex != -1) {
         await this.setupVideoDecoder();
+      } else if (this.canvas) {
+        this.canvas.width = 640;
+        this.canvas.height = 360;
       }
     } catch (error) {
       console.error("Error initializing media:", error);
@@ -1270,7 +1273,6 @@ class MediaWorker {
 
   async pumpPipeline() {
     if (!this.formatContext || this.isSeeking) return;
-    await this.refillFrameQueues();
     if (this.audioStreamIndex !== -1) await this.feedAudioDecoder();
     if (this.videoStreamIndex !== -1) await this.feedVideoDecoder();
   }

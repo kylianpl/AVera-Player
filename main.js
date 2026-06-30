@@ -260,6 +260,7 @@ document.addEventListener("DOMContentLoaded", async function () {
       videoStream.onchange = function () {
         changeStream("video", this.value);
       };
+      var hasVideo = e.data.availableStreams.video.length > 0;
       e.data.availableStreams.video.forEach((stream) => {
         var option = document.createElement("option");
         option.value = stream.index;
@@ -267,6 +268,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         option.selected = stream.selected;
         videoStream.appendChild(option);
       });
+      document.getElementById("noVideoOverlay").style.display = hasVideo ? "none" : "flex";
       var audioStream = document.getElementById("audioStream");
       audioStream.innerHTML = "";
       audioStream.onchange = (event) => {
