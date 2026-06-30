@@ -2,7 +2,6 @@ var gainNode;
 var readerNode;
 var audioContext;
 var audioWorkletScript;
-var audioInitialized = false;
 var totalTime = 0;
 var lastOffsetMediaTime = 0;
 
@@ -38,20 +37,17 @@ function formatTime(seconds) {
 }
 
 async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
-  if (audioInitialized) {
-    return;
+  if (audioContext) {
+    await audioContext.close();
   }
-  audioInitialized = true;
-  if (!audioContext) {
-    try {
-      audioContext = new AudioContext({
-        sampleRate: sampleRate,
-        latencyHint: "playback",
-      });
-    } catch (e) {
-      console.error("** Error: Unable to create audio context");
-      return null;
-    }
+  try {
+    audioContext = new AudioContext({
+      sampleRate: sampleRate,
+      latencyHint: "playback",
+    });
+  } catch (e) {
+    console.error("** Error: Unable to create audio context");
+    return null;
   }
 
   try {
@@ -110,6 +106,8 @@ document.addEventListener("DOMContentLoaded", async function () {
 
   const worker = new Worker("worker.js", { type: "module" });
   let isPlaying = false;
+  let mediaClockStartTime = performance.now() + performance.timeOrigin;
+  let mediaClockStartSeconds = 0;
 
   // Wait for samples to load before proceeding
   await waitForSamplesToLoad();
@@ -137,11 +135,32 @@ document.addEventListener("DOMContentLoaded", async function () {
       });
     }
   });
-  document.getElementById("video").addEventListener("change", (event) => {
-    // TODO correctly stop and re-init the worker
-    // For now just save to local storage and reload the page
+  document.getElementById("video").addEventListener("change", async (event) => {
+    const wasPlaying = isPlaying;
     localStorage.setItem("video", event.target.value);
-    location.reload();
+    isPlaying = false;
+    updatePlayStopButton();
+    sendMediaTimeUpdates(false);
+    document.getElementById("playStopButton").disabled = true;
+    document.getElementById("buffering").style.display = "block";
+    document.getElementById("progress").style.width = "0%";
+    document.getElementById("currentTime").textContent = formatTime(0);
+    document.getElementById("duration").textContent = "Loading...";
+
+    if (audioContext) {
+      await audioContext.close();
+      audioContext = null;
+    }
+
+    totalTime = 0;
+    lastOffsetMediaTime = 0;
+    mediaClockStartSeconds = 0;
+    mediaClockStartTime = performance.now() + performance.timeOrigin;
+    worker.postMessage({
+      type: "reinit",
+      video: event.target.value || null,
+      autoplay: wasPlaying,
+    });
   });
 
   // Toggle video on button click
@@ -194,24 +213,31 @@ document.addEventListener("DOMContentLoaded", async function () {
     if (e.data.type === "videoStatus") {
       // Update animation state
       isPlaying = e.data.isPlaying;
+      mediaClockStartSeconds = getMediaTime();
+      mediaClockStartTime = performance.now() + performance.timeOrigin;
       updatePlayStopButton();
       if (isPlaying) {
-        if (e.data.channelCount && e.data.sampleRate && e.data.sharedArrayBuffer) {
-          initializeAudio(
-            e.data.channelCount,
-            e.data.sampleRate,
-            e.data.sharedArrayBuffer,
-          );
-        }
-        await startAudio();
+        if (audioContext) await startAudio();
         sendMediaTimeUpdates(true);
       } else {
-        await stopAudio();
+        if (audioContext) await stopAudio();
         sendMediaTimeUpdates(false);
       }
+    } else if (e.data.type === "audioConfig") {
+      await initializeAudio(
+        e.data.channelCount,
+        e.data.sampleRate,
+        e.data.sharedArrayBuffer,
+      );
+      if (isPlaying) {
+        await startAudio();
+      }
     } else if (e.data.type === "initFinished") {
+      document.getElementById("buffering").style.display = "none";
       document.getElementById("playStopButton").disabled = false;
       totalTime = e.data.duration;
+      mediaClockStartSeconds = 0;
+      mediaClockStartTime = performance.now() + performance.timeOrigin;
       document.getElementById("duration").textContent = formatTime(
         e.data.duration,
       );
@@ -244,15 +270,46 @@ document.addEventListener("DOMContentLoaded", async function () {
         ? "block"
         : "none";
       if (e.data.buffering) {
-        await stopAudio();
+        if (audioContext) await stopAudio();
         sendMediaTimeUpdates(false);
       } else if (isPlaying) {
-        await startAudio();
+        if (audioContext) await startAudio();
         sendMediaTimeUpdates(true);
       }
     } else if (e.data.type == "offsetMediaTime") {
       // to offset the time from webaudio after a seek
-      lastOffsetMediaTime = e.data.mediaTime - audioContext.currentTime;
+      if (audioContext) {
+        lastOffsetMediaTime = e.data.mediaTime - audioContext.currentTime;
+      }
+      mediaClockStartSeconds = e.data.mediaTime;
+      mediaClockStartTime = performance.now() + performance.timeOrigin;
+    } else if (e.data.type === "avDrift") {
+      if (audioContext) {
+        const driftMs = e.data.driftMs;
+        if (Math.abs(driftMs) > 150) {
+          lastOffsetMediaTime += Math.sign(driftMs) * 0.001 * Math.min(50, Math.abs(driftMs) * 0.05);
+        }
+      }
+    } else if (e.data.type === "workerLagReport") {
+      const fpsCounter = document.getElementById("fpsCounter");
+      const frameTimeCounter = document.getElementById("frameTimeCounter");
+      const lagCounter = document.getElementById("lagCounter");
+      const lagStatus = document.getElementById("lagStatus");
+      if (fpsCounter) fpsCounter.textContent = e.data.fps;
+      if (frameTimeCounter) frameTimeCounter.textContent = e.data.avgFrameTime;
+      if (lagCounter) lagCounter.textContent = e.data.totalLagEvents;
+      if (lagStatus) {
+        const isLagging = e.data.lastFrameTime > 50;
+        lagStatus.textContent = isLagging
+          ? `Lag detected: ${Math.round(e.data.lastFrameTime)}ms`
+          : "Running...";
+        lagStatus.className = isLagging ? "lag-high" : "lag-normal";
+      }
+      if (fpsCounter) {
+        fpsCounter.className = e.data.fps < 30
+          ? "lag-high" : e.data.fps < 50
+            ? "lag-medium" : "lag-normal";
+      }
     }
   };
 
@@ -277,7 +334,9 @@ document.addEventListener("DOMContentLoaded", async function () {
 
   function getMediaTime() {
     if (!audioContext) {
-      return 0.0;
+      if (!isPlaying) return mediaClockStartSeconds;
+      return mediaClockStartSeconds +
+        (performance.now() + performance.timeOrigin - mediaClockStartTime) / 1000;
     }
     let outputLatency = audioContext.outputLatency
       ? audioContext.outputLatency
@@ -293,15 +352,17 @@ document.addEventListener("DOMContentLoaded", async function () {
   }
 
   let mediaTimeUpdateInterval = null;
-  let uiTimeUpdateInterval = null;
+  let uiRafId = null;
   function sendMediaTimeUpdates(enabled) {
-    if (enabled && audioInitialized) {
-      // Local testing shows this interval (1 second) is frequent enough that the
-      // estimated media time between updates drifts by less than 20 msec. Lower
-      // values didn't produce meaningfully lower drift and have the downside of
-      // waking up the main thread more often. Higher values could make av sync
-      // glitches more noticeable when changing the output device.
-      const UPDATE_INTERVAL = 1000;
+    clearInterval(mediaTimeUpdateInterval);
+    mediaTimeUpdateInterval = null;
+    if (uiRafId !== null) {
+      self.cancelAnimationFrame(uiRafId);
+      uiRafId = null;
+    }
+
+    if (enabled) {
+      const UPDATE_INTERVAL = 200;
       mediaTimeUpdateInterval = setInterval(() => {
         worker.postMessage({
           type: "updateMediaTime",
@@ -309,8 +370,9 @@ document.addEventListener("DOMContentLoaded", async function () {
           videoTimeStart: performance.now() + performance.timeOrigin,
         });
       }, UPDATE_INTERVAL);
-      uiTimeUpdateInterval = setInterval(() => {
-        if (totalTime > 0) {
+
+      function updateUi() {
+        if (isPlaying && totalTime > 0) {
           var currentTime = getMediaTime();
           document.getElementById("progress").style.width =
             `${(currentTime / totalTime) * 100}%`;
@@ -324,97 +386,12 @@ document.addEventListener("DOMContentLoaded", async function () {
             });
           }
         }
-      }, 500);
-    } else {
-      clearInterval(mediaTimeUpdateInterval);
-      clearInterval(uiTimeUpdateInterval);
-      uiTimeUpdateInterval = null;
-      mediaTimeUpdateInterval = null;
+        uiRafId = self.requestAnimationFrame(updateUi);
+      }
+      updateUi();
     }
   }
 
-  ///////////////////////
-  // Lag Monitor Setup //
-  ///////////////////////
-
-  // Initialize and start the lag monitor
-  let script = document.createElement("script");
-  script.src = "libs/lag-monitor.js";
-  document.head.appendChild(script);
-  script.onload = function () {
-    // Get references to HTML elements
-    const lagStatusElement = document.getElementById("lagStatus");
-    const fpsCounterElement = document.getElementById("fpsCounter");
-    const frameTimeCounterElement = document.getElementById("frameTimeCounter");
-    const lagCounterElement = document.getElementById("lagCounter");
-
-    let totalLagEvents = 0;
-
-    // Create the lag monitor with custom settings
-    const lagMonitor = new LagMonitor({
-      lagThresholdMs: 50, // 50ms threshold for lag detection
-      reportingInterval: 3000, // Report stats every 3 seconds
-      onLagDetected: (data) => {
-        console.warn(
-          `Main thread lag detected: ${Math.round(data.frameTime)}ms`,
-        );
-
-        // Update lag counter
-        totalLagEvents++;
-        lagCounterElement.textContent = totalLagEvents;
-
-        // Update status indicator
-        lagStatusElement.textContent = `Lag detected: ${Math.round(data.frameTime)}ms`;
-        lagStatusElement.className = "lag-high";
-
-        // Reset class after a moment
-        setTimeout(() => {
-          lagStatusElement.textContent = "Running...";
-          lagStatusElement.className = "lag-normal";
-        }, 2000);
-
-        // Add visual indicator for lag on the page
-        const lagIndicator = document.createElement("div");
-        lagIndicator.style.position = "fixed";
-        lagIndicator.style.top = "10px";
-        lagIndicator.style.right = "10px";
-        lagIndicator.style.backgroundColor = "red";
-        lagIndicator.style.color = "white";
-        lagIndicator.style.padding = "5px 10px";
-        lagIndicator.style.borderRadius = "5px";
-        lagIndicator.style.zIndex = "9999";
-        lagIndicator.style.opacity = "0.8";
-        lagIndicator.textContent = `Lag: ${Math.round(data.frameTime)}ms`;
-
-        document.body.appendChild(lagIndicator);
-
-        // Remove the indicator after 2 seconds
-        setTimeout(() => {
-          lagIndicator.remove();
-        }, 2000);
-      },
-      // Add callback to update UI with stats
-      onStatsUpdate: (stats) => {
-        fpsCounterElement.textContent = stats.fps;
-        frameTimeCounterElement.textContent = stats.avgFrameTime;
-
-        // Color code based on performance
-        if (stats.fps < 30) {
-          fpsCounterElement.className = "lag-high";
-        } else if (stats.fps < 50) {
-          fpsCounterElement.className = "lag-medium";
-        } else {
-          fpsCounterElement.className = "lag-normal";
-        }
-      },
-    });
-
-    // Start monitoring
-    lagMonitor.start();
-
-    // Expose to window for debugging
-    window.lagMonitor = lagMonitor;
-  };
 });
 
 // Function to wait for samples to be loaded

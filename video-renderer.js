@@ -4,6 +4,8 @@
 class WebGLRenderer {
   #canvas = null;
   #ctx = null;
+  #lastWidth = 0;
+  #lastHeight = 0;
 
   static vertexShaderSource = `
     attribute vec2 xy;
@@ -71,34 +73,44 @@ class WebGLRenderer {
     // Create one texture to upload frames to.
     const texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
   }
 
   draw(frame) {
-    this.#canvas.width = frame.displayWidth;
-    this.#canvas.height = frame.displayHeight;
+    if (frame.displayWidth !== this.#lastWidth || frame.displayHeight !== this.#lastHeight) {
+      this.#canvas.width = frame.displayWidth;
+      this.#canvas.height = frame.displayHeight;
+      this.#lastWidth = frame.displayWidth;
+      this.#lastHeight = frame.displayHeight;
+    }
 
     const gl = this.#ctx;
+    const source = frame.bitmap || frame;
 
     // Upload the frame.
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
 
-    // Configure and clear the drawing area.
+    // Configure and draw the frame.
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
-    gl.clearColor(1.0, 0.0, 0.0, 1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-
-    // Draw the frame.
     gl.drawArrays(gl.TRIANGLE_FAN, 0, 4);
+  }
+
+  clear() {
+    const gl = this.#ctx;
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
   }
 }
 
 class WebGPURenderer {
   #canvas = null;
   #ctx = null;
+  #lastWidth = 0;
+  #lastHeight = 0;
 
   // Promise for `#start()`, WebGPU setup is asynchronous.
   #started = null;
@@ -199,8 +211,14 @@ class WebGPURenderer {
     // Don't try to draw any frames until the context is configured.
     await this.#started;
 
-    this.#canvas.width = frame.displayWidth;
-    this.#canvas.height = frame.displayHeight;
+    if (frame.displayWidth !== this.#lastWidth || frame.displayHeight !== this.#lastHeight) {
+      this.#canvas.width = frame.displayWidth;
+      this.#canvas.height = frame.displayHeight;
+      this.#lastWidth = frame.displayWidth;
+      this.#lastHeight = frame.displayHeight;
+    }
+
+    const source = frame.bitmap || frame;
 
     const uniformBindGroup = this.#device.createBindGroup({
       layout: this.#pipeline.getBindGroupLayout(0),
@@ -208,7 +226,7 @@ class WebGPURenderer {
         { binding: 1, resource: this.#sampler },
         {
           binding: 2,
-          resource: this.#device.importExternalTexture({ source: frame }),
+          resource: this.#device.importExternalTexture({ source }),
         },
       ],
     });
@@ -233,11 +251,31 @@ class WebGPURenderer {
     passEncoder.end();
     this.#device.queue.submit([commandEncoder.finish()]);
   }
+
+  async clear() {
+    await this.#started;
+    const commandEncoder = this.#device.createCommandEncoder();
+    const textureView = this.#ctx.getCurrentTexture().createView();
+    const passEncoder = commandEncoder.beginRenderPass({
+      colorAttachments: [
+        {
+          view: textureView,
+          clearValue: [0.0, 0.0, 0.0, 1.0],
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+    });
+    passEncoder.end();
+    this.#device.queue.submit([commandEncoder.finish()]);
+  }
 }
 
 class Canvas2DRenderer {
   #canvas = null;
   #ctx = null;
+  #lastWidth = 0;
+  #lastHeight = 0;
 
   constructor(canvas) {
     this.#canvas = canvas;
@@ -245,9 +283,17 @@ class Canvas2DRenderer {
   }
 
   draw(frame) {
-    this.#canvas.width = frame.displayWidth;
-    this.#canvas.height = frame.displayHeight;
-    this.#ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight);
+    if (frame.displayWidth !== this.#lastWidth || frame.displayHeight !== this.#lastHeight) {
+      this.#canvas.width = frame.displayWidth;
+      this.#canvas.height = frame.displayHeight;
+      this.#lastWidth = frame.displayWidth;
+      this.#lastHeight = frame.displayHeight;
+    }
+    this.#ctx.drawImage(frame.bitmap || frame, 0, 0, frame.displayWidth, frame.displayHeight);
+  }
+
+  clear() {
+    this.#ctx.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
   }
 }
 

@@ -1,32 +1,37 @@
 # AVera Player
-AVera Player is a web media player built from scratch using WebCodecs, WebAudio and LibAV.js.
-The goal of this project is a universal media player can play as much formats as possible.
 
-Currently, the player can play any containers supported by LibAV.js (mp4, mkv, webm, avi, mov, etc.) and any video codecs supported by WebCodecs (H.264, VP8/9, AV1, etc.). Audio is decoded using either WebCodecs or LibAV.js and played using WebAudio.
-A lot of the code is inspired by the audio video player sample from the WebCodecs specification.
+AVera Player is a web media player built from scratch using WebCodecs, WebAudio and LibAV.js.
+The goal is a universal media player that can play as many formats as possible.
+
+Supports any container LibAV.js can demux (mp4, mkv, webm, avi, mov, etc.) and any video codec
+supported by WebCodecs (H.264, VP8/9, AV1, etc.). Audio is decoded via WebCodecs or LibAV.js
+and played through WebAudio. Inspired by the WebCodecs spec's audio/video sample.
 
 ## Features
-- Download then play videos from a sample file (no streaming yet)
-- Uses WebCodecs for hardware video/audio decoding (if available)
-- Uses LibAV.js for software decoding fallback
-- Synchronized audio and video playback with the WebAudio timer
-- Seeking support (currently not very accurate)
-- Basic playback controls (play, pause, seek)
-- Displays video resolution and codec information
+
+- **Streaming playback** via HTTP Range requests (no full download) — 1 MiB block-based read
+- **WebCodecs** hardware decoding with LibAV.js software fallback
+- **Three renderers** chosen dynamically: WebGPU → WebGL2 → WebGL → Canvas2D
+- **Synchronized A/V** with WebAudio clock + drift correction
+- **Seeking** with audio/video preroll and frame-accurate display
+- **Worker-side lag monitoring** — FPS and frame time tracking in the render worker
+- **Bilinear chroma upsampling** for YUV→RGB conversion (I420, NV12)
+- **Packet queue** with byte budget (60 packets / 16 MiB max)
+- **`queueMicrotask`-based pipeline pump** — no `setTimeout(fn, 0)` in hot paths
+- Dynamic stream switching (video/audio track selection)
 
 ## Getting Started
-1. Clone the repository with submodules:
-   ```bash
-   git clone --recurse-submodules https://github.com/kylianpl/AVera-Player.git
-   ```
-2. Start a local web server:
-   ```bash
-   cd AVera-Player
-   python server.py
-   ```
 
-The player should now be accessible at `http://localhost:8888`.
+```bash
+git clone --recurse-submodules https://github.com/kylianpl/AVera-Player.git
+cd AVera-Player
+python server.py
+```
+
+Open `http://localhost:8888`.
 
 ## Contributing
-Contributions are welcome! Please open issues and pull requests for any features, bug fixes, or improvements.
-Especially needed are improvements to seeking accuracy and better handling of various media formats, so if you have experience in these areas, your help would be greatly appreciated.
+
+Contributions welcome! Open issues and pull requests for features, bug fixes, or improvements.
+Particularly welcome: seeking accuracy, more media format support, and splitting the monolithic
+Worker into separate demuxer/decoder/renderer threads.

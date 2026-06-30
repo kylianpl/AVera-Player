@@ -122,7 +122,7 @@
     <body>
         <div style="position: relative">
             <canvas id="videoCanvas" width="400" height="300"></canvas>
-            <div class="loader" id="buffering" style="display: none"></div>
+            <div class="loader" id="buffering" style="display: block"></div>
         </div>
         <div class="controls" style="width: 100%">
             <div id="progressBar">
@@ -176,6 +176,11 @@
                 try {
                     const response = await fetch("./samples/samples.json");
                     const samples = await response.json();
+                    const localResponse = await fetch("./samples/samples.local.json");
+                    const localSamples = localResponse.ok
+                        ? await localResponse.json()
+                        : [];
+                    samples.push(...localSamples);
                     const videoSelect = document.getElementById("video");
                     const creditMap = {};
 

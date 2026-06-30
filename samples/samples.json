@@ -12,8 +12,7 @@
   {
     "name": "Big Buck Bunny 720p 24fps surround",
     "credit": "Made by Blender Foundation, licensed under Creative Commons: By Attribution 4.0 License http://creativecommons.org/licenses/by/4.0/",
-    "path": "https://kytech.fr/sample-video-files/big_buck_bunny_720p_surround.avi",
-    "selected": true
+    "path": "https://kytech.fr/sample-video-files/big_buck_bunny_720p_surround.avi"
   },
   {
     "name": "Big Buck Bunny Native render size (4000x2250) 60fps",
