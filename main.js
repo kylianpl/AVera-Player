@@ -38,6 +38,9 @@ function formatTime(seconds) {
 
 async function initializeAudio(channelCount, sampleRate, sharedArrayBuffer) {
   if (audioContext && audioContext.sampleRate !== sampleRate) {
+    console.warn(
+      `initializeAudio: rate mismatch (ctx=${audioContext.sampleRate} vs stream=${sampleRate}), recreating`,
+    );
     await audioContext.close();
     audioContext = null;
   }
@@ -117,6 +120,7 @@ document.addEventListener("DOMContentLoaded", async function () {
   let isPlaying = false;
   let mediaClockStartTime = performance.now() + performance.timeOrigin;
   let mediaClockStartSeconds = 0;
+  let availableStreams = null;
 
   // Wait for samples to load before proceeding
   await waitForSamplesToLoad();
@@ -269,6 +273,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         videoStream.appendChild(option);
       });
       document.getElementById("noVideoOverlay").style.display = hasVideo ? "none" : "flex";
+      availableStreams = e.data.availableStreams;
       var audioStream = document.getElementById("audioStream");
       audioStream.innerHTML = "";
       audioStream.onchange = (event) => {
@@ -330,11 +335,38 @@ document.addEventListener("DOMContentLoaded", async function () {
   };
 
   function changeStream(type, index) {
+    if (type === "audio") {
+      const idx = parseInt(index);
+      const targetStream = availableStreams?.audio?.find(s => s.index === idx);
+      if (targetStream) {
+        if (audioContext && audioContext.sampleRate !== targetStream.sampleRate) {
+          audioContext.close();
+          audioContext = tryCreateAudioContext(targetStream.sampleRate);
+        } else if (!audioContext) {
+          audioContext = tryCreateAudioContext(targetStream.sampleRate);
+        }
+      }
+    }
     worker.postMessage({
       type: "changeStream",
       streamType: type,
       index: parseInt(index),
     });
+  }
+
+  function tryCreateAudioContext(sampleRate) {
+    try {
+      const ctx = new AudioContext({ sampleRate, latencyHint: "playback" });
+      if (!isPlaying) ctx.suspend();
+      console.log(`AudioContext created at ${ctx.sampleRate} Hz (requested ${sampleRate} Hz)`);
+      return ctx;
+    } catch (e) {
+      console.warn(`Failed to create AudioContext at ${sampleRate} Hz: ${e}. Using default.`);
+      const ctx = new AudioContext({ latencyHint: "playback" });
+      if (!isPlaying) ctx.suspend();
+      console.log(`AudioContext created at fallback ${ctx.sampleRate} Hz`);
+      return ctx;
+    }
   }
   /////////////////////////
   // Audio configuration //

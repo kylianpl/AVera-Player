@@ -30,11 +30,14 @@ class AudioReaderProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs, params) {
-    if (
-      this.consumerSide.pop(this.deinterleaveBuffer) !=
-      this.deinterleaveBuffer.length
-    ) {
-      console.warn("Warning: audio underrun");
+    const read = this.consumerSide.pop(this.deinterleaveBuffer);
+    if (read !== this.deinterleaveBuffer.length) {
+      const filled = Math.max(0, read);
+      this.deinterleaveBuffer.fill(0, filled);
+      if (filled === 0) {
+        for (const ch of outputs[0]) ch.fill(0);
+        return true;
+      }
     }
     this.deinterleave(this.deinterleaveBuffer, outputs[0]);
     return true;

@@ -687,10 +687,8 @@ class MediaWorker {
         if (this.WCAudioDecoder.state == "configured")
           await this.WCAudioDecoder.flush();
       } else if (this.AudioDecoderCodecContext) {
-        await this.libav.ff_free_decoder(
+        await this.libav.avcodec_flush_buffers(
           this.AudioDecoderCodecContext,
-          this.AudioDecoderPacket,
-          this.AudioDecoderFrame,
         );
       }
       if (this.feedAudioDecoderTimeout) {
@@ -882,19 +880,26 @@ class MediaWorker {
 
   async setupFallbackAudioDecoder() {
     this.audioUseWebCodecs = false;
+    this._audioDebugCount = 0;
+    this._audioDecodeWarn = 0;
     if (this.WCAudioDecoder) {
       if (this.WCAudioDecoder.state == "configured")
         this.WCAudioDecoder.close();
       this.WCAudioDecoder = null;
     }
+    const streamInfo = this.streams[this.audioStreamIndex];
     [
       ,
       this.AudioDecoderCodecContext,
       this.AudioDecoderPacket,
       this.AudioDecoderFrame,
     ] = await this.libav.ff_init_decoder(
-      this.streams[this.audioStreamIndex].codec_id,
-      this.streams[this.audioStreamIndex].codecpar,
+      streamInfo.codec_id,
+      streamInfo.codecpar,
+    );
+    console.log(
+      `[audio] libav decoder init: codec=${streamInfo.codec_id} idx=${this.audioStreamIndex}`,
+      `ch=${this.channelCount} sr=${this.audioSampleRate}`,
     );
   }
 
@@ -1632,6 +1637,7 @@ class MediaWorker {
         } else {
           if (!this.AudioDecoderCodecContext) return;
           // fallback decoding with libav
+          if (!this.AudioDecoderCodecContext) return;
           var frames = await this.libav.ff_decode_multi(
             this.AudioDecoderCodecContext,
             this.AudioDecoderPacket,
@@ -1639,8 +1645,18 @@ class MediaWorker {
             [packet],
             false,
           );
-          for (const frame of frames) {
-            this.bufferAudioSamples(frame);
+          if (!frames || frames.length === 0) {
+            if ((this._audioDecodeWarn || 0) < 5) {
+              console.warn(
+                `[audio] ff_decode_multi returned ${frames?.length} frames, pts=${packet.pts} dts=${packet.dts} size=${packet.size}`,
+              );
+              this._audioDecodeWarn = (this._audioDecodeWarn || 0) + 1;
+            }
+          }
+          if (frames) {
+            for (const frame of frames) {
+              this.bufferAudioSamples(frame);
+            }
           }
         }
         usedBufferElements =
@@ -1695,6 +1711,19 @@ class MediaWorker {
       );
     const isAudioData = data instanceof AudioData;
     const frameNumber = isAudioData ? data.numberOfFrames : data.nb_samples;
+    if (!isAudioData && (this._audioDebugCount || 0) < 3) {
+      const planar = data.data instanceof Array;
+      const el = planar ? data.data[0] : data.data;
+      const formatName = planar ? "planar" : "interleaved";
+      const typeName = el?.constructor?.name ?? "unknown";
+      const chLayout = data.ch_layout_nb_channels ?? "?";
+      console.log(
+        `[audio] libav frame: nb_samples=${data.nb_samples}`,
+        `sr=${data.sample_rate} ch=${data.channels} ch_layout=${chLayout}`,
+        `${formatName} ${typeName}`,
+      );
+      this._audioDebugCount = (this._audioDebugCount || 0) + 1;
+    }
     if (this.audioPrerollTargetSeconds !== null) {
       const frameTime = this.frameTimeSeconds(data);
       const frameEnd = frameTime == null
