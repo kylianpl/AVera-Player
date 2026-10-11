@@ -1,5 +1,7 @@
 # AVera Player
 
+For a continuation of the project, see https://git.kytech.fr/Kylian/avera-wasm
+
 AVera Player is a web media player built from scratch using WebCodecs, WebAudio and LibAV.js.
 The goal is a universal media player that can play as many formats as possible.
 
